@@ -1,8 +1,10 @@
 #pragma once
 
-#include "entt.hpp"
+#include "entt/entt.hpp"
 #include <string>
 #include <vector>
+
+class Game;
 
 struct ActionDefId { size_t value; };
 struct ItemDefId { size_t value; };
@@ -16,8 +18,10 @@ enum class ActionTargetType {
 };
 
 struct ActionContext {
-    entt::registry& state;
+    Game& g;
+    entt::entity actor;
     entt::entity targetEntity = entt::null;
+    entt::entity targetEntity2 = entt::null;
 };
 
 struct ActionDef {
