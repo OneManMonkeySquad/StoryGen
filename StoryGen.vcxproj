@@ -24,6 +24,7 @@
   <ItemGroup>
     <ClInclude Include="src\Data.h" />
     <ClInclude Include="src\Game.h" />
+    <ClInclude Include="src\Planner.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>16.0</VCProjectVersion>

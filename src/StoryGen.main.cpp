@@ -1,127 +1,64 @@
 #include "Game.h"
+#include "Planner.h"
 #include <windows.h>
-#include <optional>
 
-
-// <person, action, target>
-struct Goal {
-	entt::entity person;
-	ActionDefId actionDef;
-	entt::entity target;
-};
-
-class Planner {
-public:
-	Planner(Game& g) : _g(g) {}
-
-	void AddGoal(Goal goal) {
-		_goal.push_back(goal);
-	}
-
-	std::optional<std::vector<Goal>> Run() {
-		const auto& currentGoal = _goal[0];
-
-		std::vector<Partial> todo;
-		todo.push_back(Partial{ _g.Clone(), {} });
-
-		while (!todo.empty()) {
-			auto partial = std::move(todo.back());
-			todo.pop_back();
-
-			const auto MAX_STEPS = 4;
-			if (partial.steps.size() > MAX_STEPS)
-				continue;
-
-			struct Visitor {
-				entt::entity _person;
-				std::vector<Goal> poo;
-				Visitor(entt::entity person) : _person(person) {}
-				void operator()(ActionDefId actionId, const TargetPersonWithItem& target) {
-					poo.push_back(Goal{ _person, actionId, target.person });
-				}
-				void operator()(ActionDefId actionId, const TargetItemOnPerson& target) {
-					poo.push_back(Goal{ _person, actionId, target.person });
-				}
-				void operator()(ActionDefId actionId, ...) {
-					poo.push_back(Goal{ _person, actionId, entt::null });
-				}
-			} visitor(currentGoal.person);
-
-			partial.state.VisitPossibleActionsForPerson(currentGoal.person, visitor);
-
-			for (size_t i = 0; i < visitor.poo.size(); ++i) {
-				Partial newPartial{ partial.state.Clone(), partial.steps };
-				newPartial.steps.push_back(visitor.poo[i]);
-
-				if (visitor.poo[i].actionDef.value == currentGoal.actionDef.value
-					&& visitor.poo[i].target == currentGoal.target)
-					return newPartial.steps;
-
-				newPartial.state.ExecuteActionForPerson(currentGoal.person, i);
-
-				todo.push_back(std::move(newPartial));
-			}
-		}
-
-		return {};
-	}
-
-private:
-	Game& _g;
-	std::vector<Goal> _goal;
-
-	struct Partial {
-		Game state;
-		std::vector<Goal> steps;
-	};
-};
 
 void InitTestGame(Game& g, Planner& p) {
 	///////////////////////////////////////// Setup /////////////////////////////////////////
-	const auto idle = g.CreateActionDef("Sleep", ActionTargetType::None, [](const ActionContext& ctx) {});
-	const auto steal = g.CreateActionDef("Steal", ActionTargetType::ItemOnPerson, [](const ActionContext& ctx) {
-		ctx.g.RemoveItem(ctx.targetEntity2, ctx.targetEntity);
-		ctx.g.AddItem(ctx.actor, ctx.targetEntity);
+	const auto sleep = g.CreateActionDef("sleep", ActionTargetType::None, [](Game&, const ActionRef&) {});
+	const auto steal = g.CreateActionDef("steal", ActionTargetType::ItemOnPerson, [](Game& g, const ActionRef& ref) {
+		g.RemoveItem(ref.target, ref.targetItem);
+		g.AddItem(ref.actor, ref.targetItem);
 		});
-	g.AddPersonAction(idle);
+	g.AddPersonAction(sleep);
 	g.AddPersonAction(steal);
 
-	const auto stab = g.CreateActionDef("Stab", ActionTargetType::Person, [](const ActionContext& ctx) {
-		ctx.g.KillPerson(ctx.targetEntity);
+	const auto stab = g.CreateActionDef("stab", ActionTargetType::Person, [](Game& g, const ActionRef& ref) {
+		g.KillPerson(ref.target);
 		});
-	const auto knifeDef = g.CreateItemDef("Knife", { stab });
+	const auto knifeDef = g.CreateItemDef("knife", { stab });
+
+	const auto bribe = g.CreateActionDef("bribe", ActionTargetType::Person, [](Game& g, const ActionRef& ref) {
+		g.RemoveItem(ref.actor, ref.item);
+		g.AddItem(ref.target, ref.item);
+		});
+	const auto coinDef = g.CreateItemDef("coin", { bribe });
 
 	auto player = g.CreatePlayer();
 
-	auto chloe = g.CreatePerson("Chloe");
-	g.AddItem(chloe, g.CreateItem(knifeDef));
+	auto queen = g.CreatePerson("Queen");
+	g.AddItem(queen, g.CreateItem(knifeDef));
+	g.AddItem(queen, g.CreateItem(coinDef));
 
 	auto king = g.CreatePerson("King");
+	g.AddItem(king, g.CreateItem(coinDef));
 
+	auto soldier = g.CreatePerson("Soldier");
 
 	///////////////////////////////////////// Story /////////////////////////////////////////
-	// <person, action, target>
-
-	p.AddGoal({ king, stab, chloe });
-
-	auto plan = p.Run();
-	if (plan) {
-		printf("Plan:\n");
-		for (auto step : *plan) {
-			auto& actionDef = g.GetActionDef(step.actionDef);
-			auto& actor = g.GetPersonDef(step.person);
-			auto& target = g.GetPersonDef(step.target);
-			printf("  <%s,%s,%s>\n", actor.name.c_str(), actionDef.name.c_str(), target.name.c_str());
-		}
-	}
+	p.AddGoal({ king, bribe, soldier });
+	p.AddGoal({ soldier, stab, queen });
 }
 
-void RunGame(Game& g) {
+void PrintPlayerActions(const Game& g, const std::vector<ActionRef>& actions) {
+	printf("\x1b[30;47m");
+	for (size_t i = 0; i < actions.size(); ++i) {
+		auto& action = actions[i];
+		auto desc = g.GetActionDescription(action);
+		printf("%d. %s\n", static_cast<int>(i + 1), desc.c_str());
+	}
+	printf("\x1b[m");
+}
+
+void RunGame(Game& g, Planner& p) {
 	g.DescribeState();
 	printf("\n\n");
 
 	while (true) {
-		g.PrintPlayerActions();
+		const auto player = g.GetPlayer();
+		const auto possiblePlayerActions = g.CalculatePossibleActionsForPerson(player);
+
+		PrintPlayerActions(g, possiblePlayerActions);
 
 		auto c = _getch();
 		if (c == 27)
@@ -129,30 +66,63 @@ void RunGame(Game& g) {
 
 		printf("\x1B[0G");
 
-		g.ExecutePlayerAction(static_cast<size_t>(c - 49));
+		const auto playerActionIdx = c - 49;
+		if (playerActionIdx < 0 || playerActionIdx >= possiblePlayerActions.size())
+			continue;
+
+		const auto& playerAction = possiblePlayerActions[playerActionIdx];
+		printf("%s.", g.GetActionDescription(playerAction).c_str());
+
+		g.ExecuteActionForPerson(playerAction);
+
+		auto plan = p.CalculatePlan();
+		if (plan) {
+#if 1
+			printf("Plan: {");
+			for (auto step : *plan) {
+				printf(" %s", g.GetActionDescription(step).c_str());
+			}
+			printf("}\n");
+#endif
+
+			auto firstStep = (*plan)[0];
+			g.ExecuteActionForPerson(firstStep);
+
+			printf(" %s.\n", g.GetActionDescription(firstStep).c_str());
+
+			if (plan->size() == 1) {
+				p.NextGoal();
+			}
+		}
 
 		printf("\n");
 	}
 }
 
-
-int main(int argc, char** argv) {
+bool InitConsole() {
 	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
 	if (hOut == INVALID_HANDLE_VALUE)
-		return GetLastError();
+		return false;
 
 	DWORD dwMode = 0;
 	if (!GetConsoleMode(hOut, &dwMode))
-		return GetLastError();
+		return false;
 
 	dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
 	if (!SetConsoleMode(hOut, dwMode))
+		return false;
+
+	return true;
+}
+
+int main(int argc, char** argv) {
+	if (!InitConsole())
 		return GetLastError();
 
 	Game g;
 	Planner p{ g };
 	InitTestGame(g, p);
-	RunGame(g);
+	RunGame(g, p);
 
 	return 0;
 }

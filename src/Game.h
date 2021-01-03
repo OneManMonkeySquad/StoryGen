@@ -35,6 +35,20 @@ public:
 		return g;
 	}
 
+	PersonDef& GetPersonDef(entt::entity entity) const {
+		auto& person = _state.get<C::Person>(entity);
+		return _defs->persons[person.defId.value];
+	}
+
+	ItemDef& GetItemDef(entt::entity entity) const {
+		auto& item = _state.get<C::Item>(entity);
+		return _defs->items[item.defId.value];
+	}
+
+	ActionDef& GetActionDef(ActionDefId actionId) const {
+		return _defs->actions[actionId.value];
+	}
+
 	void DescribeState() {
 		printf("There's ");
 		auto persons = _state.view<const C::Person>();
@@ -43,76 +57,19 @@ public:
 			const auto& personDef = _defs->persons[person.defId.value];
 			const auto isDead = _state.has<C::Dead>(*it);
 
-			if (it != persons.begin()) {
-				printf(", ");
-			}
 			printf("%s", personDef.name.c_str());
 			if (isDead) {
 				printf(" (dead)");
 			}
+			if (it + 2 < persons.end()) {
+				printf(", ");
+			}
+			if (it + 2 == persons.end()) {
+				printf(" and ");
+			}
 		}
 
 		printf(". ");
-	}
-
-	void PrintPlayerActions() {
-		struct Visitor {
-			unsigned int _idx = 0;
-			Game& _g;
-
-			Visitor(Game& g) : _g(g) {}
-
-			void operator()(ActionDefId actionId) {
-				const auto& actionDef = _g.GetActionDef(actionId);
-				printf("%u: %s\n", _idx + 1, actionDef.name.c_str());
-				++_idx;
-			}
-
-			void operator()(ActionDefId actionId, const TargetPerson& target) {
-				const auto& actionDef = _g.GetActionDef(actionId);
-				const auto& targetPersonDef = _g.GetPersonDef(target.person);
-				printf("%u: %s %s\n",
-					_idx + 1,
-					actionDef.name.c_str(),
-					targetPersonDef.name.c_str());
-
-				++_idx;
-			}
-
-			void operator()(ActionDefId actionId, const TargetPersonWithItem& target) {
-				const auto& actionDef = _g.GetActionDef(actionId);
-				const auto& targetPersonDef = _g.GetPersonDef(target.person);
-				const auto& itemDef = _g.GetItemDef(target.item);
-				printf("%d: %s %s with %s\n",
-					_idx + 1,
-					actionDef.name.c_str(),
-					targetPersonDef.name.c_str(),
-					itemDef.name.c_str());
-
-				++_idx;
-			}
-
-			void operator()(ActionDefId actionId, const TargetItemOnPerson& target) {
-				const auto& actionDef = _g.GetActionDef(actionId);
-				const auto& targetPersonDef = _g.GetPersonDef(target.person);
-				const auto& targetItemDef = _g.GetItemDef(target.item);
-				printf("%d: %s %s's %s\n",
-					_idx + 1,
-					actionDef.name.c_str(),
-					targetPersonDef.name.c_str(),
-					targetItemDef.name.c_str());
-
-				++_idx;
-			}
-		} visitor(*this);
-
-		auto player = _state.view<C::Player>().front();
-		VisitPossibleActionsForPerson(player, visitor);
-	}
-
-	void ExecutePlayerAction(size_t actionIdx) {
-		auto player = _state.view<C::Player>().front();
-		ExecuteActionForPerson(player, actionIdx);
 	}
 
 	void AddItem(entt::entity person, entt::entity item) {
@@ -136,7 +93,7 @@ public:
 		return true;
 	}
 
-	ActionDefId CreateActionDef(std::string name, ActionTargetType targetType, std::function<void(const ActionContext&)> apply) {
+	ActionDefId CreateActionDef(std::string name, ActionTargetType targetType, std::function<void(Game&, const ActionRef&)> apply) {
 		const auto defIdx = _defs->actions.size();
 
 		ActionDef def;
@@ -172,7 +129,7 @@ public:
 	}
 
 	entt::entity CreatePlayer() {
-		auto player = CreatePerson("Player");
+		auto player = CreatePerson("you");
 		_state.emplace<C::Player>(player);
 		return player;
 	}
@@ -194,35 +151,77 @@ public:
 		_state.emplace<C::Dead>(person);
 	}
 
-	PersonDef& GetPersonDef(entt::entity entity) {
-		auto& person = _state.get<C::Person>(entity);
-		return _defs->persons[person.defId.value];
+	std::string GetActionDescription(const ActionRef& ref) const {
+		auto action = GetActionDef(ref.actionId);
+		auto& actor = GetPersonDef(ref.actor);
+		auto* target = ref.target != entt::null ? &GetPersonDef(ref.target) : nullptr;
+
+		char buff[512];
+		
+
+		switch (action.targetType) {
+		case ActionTargetType::None:
+			snprintf(buff, std::size(buff), "%s %s",
+				actor.name.c_str(),
+				action.name.c_str());
+			break;
+
+		case ActionTargetType::ItemOnPerson:
+			snprintf(buff, std::size(buff), "%s %s %s from %s",
+				actor.name.c_str(),
+				action.name.c_str(),
+				GetItemDef(ref.targetItem).name.c_str(),
+				target ? target->name.c_str() : "");
+			break;
+
+		default:
+			snprintf(buff, std::size(buff), "%s %s %s",
+				actor.name.c_str(),
+				action.name.c_str(),
+				target ? target->name.c_str() : "");
+			break;
+		}
+
+		// Player action : <you, Sleep, >
+		// Narrator action : <King, Steal, Queen>
+
+		return buff;
 	}
 
-	ItemDef& GetItemDef(entt::entity entity) {
-		auto& item = _state.get<C::Item>(entity);
-		return _defs->items[item.defId.value];
+	entt::entity GetPlayer() {
+		auto player = _state.view<C::Player>().front();
+		return player;
 	}
 
-	ActionDef& GetActionDef(ActionDefId actionId) {
-		return _defs->actions[actionId.value];
+	void ExecuteActionForPerson(const ActionRef& ref) {
+		const auto& actionDef = _defs->actions[ref.actionId.value];
+		actionDef.apply(*this, ref);
+	}
+
+	std::vector<ActionRef> CalculatePossibleActionsForPerson(entt::entity person) {
+		std::vector<ActionRef> result;
+		VisitPossibleActionsForPerson(person, [&](const ActionRef& ref) { result.push_back(ref); });
+		return result;
 	}
 
 	template<typename VisitorT>
-	void VisitPossibleActionsForPerson(entt::entity person, VisitorT& visitor) {
+	void VisitPossibleActionsForPerson(entt::entity person, VisitorT&& visitor) {
 		for (const auto actionDefId : _defs->personActions) {
 			const auto& actionDef = _defs->actions[actionDefId.value];
 
+			ActionRef ref;
+			ref.actionId = actionDefId;
+			ref.actor = person;
+
 			switch (actionDef.targetType) {
 			case ActionTargetType::None:
-				visitor(actionDefId); // <--
+				visitor(ref); // <--
 				break;
 
 			case ActionTargetType::Person:
-				for (const auto targetPerson : _state.view<C::Person>()) {
-					TargetPerson target;
-					target.person = targetPerson;
-					visitor(actionDefId, target); // <--
+				for (const auto targetPerson : _state.view<C::Person>(entt::exclude<C::Dead>)) {
+					ref.target = targetPerson;
+					visitor(ref); // <--
 				}
 				break;
 
@@ -234,10 +233,9 @@ public:
 					auto& targetInventory = _state.get<C::Inventory>(targetEnt);
 
 					for (const auto targetItem : targetInventory.items) {
-						TargetItemOnPerson target;
-						target.person = targetEnt;
-						target.item = targetItem;
-						visitor(actionDefId, target); // <--
+						ref.target = targetEnt;
+						ref.targetItem = targetItem;
+						visitor(ref); // <--
 					}
 				}
 				break;
@@ -255,16 +253,19 @@ public:
 			for (const auto actionDefId : itemDef.possibleActions) {
 				const auto& actionDef = _defs->actions[actionDefId.value];
 
+				ActionRef ref;
+				ref.actionId = actionDefId;
+				ref.actor = person;
+
 				switch (actionDef.targetType) {
 				case ActionTargetType::Person:
-					for (const auto targetEntity : _state.view<C::Person>()) {
+					for (const auto targetEntity : _state.view<C::Person>(entt::exclude<C::Dead>)) {
 						if (targetEntity == person)
 							continue;
 
-						TargetPersonWithItem target;
-						target.person = targetEntity;
-						target.item = itemEntity;
-						visitor(actionDefId, target); // <--
+						ref.target = targetEntity;
+						ref.item = itemEntity;
+						visitor(ref); // <--
 					}
 					break;
 
@@ -273,65 +274,6 @@ public:
 				}
 			}
 		}
-	}
-
-	void ExecuteActionForPerson(entt::entity actor, size_t actionIdx) {
-		struct Visitor {
-			size_t m_idx = 0;
-			size_t m_executeIdx;
-			Game& m_g;
-			entt::entity m_actor;
-
-			Visitor(Game& g, entt::entity actor, size_t executeIdx)
-				: m_g(g), m_actor(actor), m_executeIdx(executeIdx) {}
-
-			void operator()(ActionDefId actionId) {
-				if (m_idx == m_executeIdx) {
-					auto& actionDef = m_g.GetActionDef(actionId);
-					auto ctx = ActionContext{ m_g, m_actor };
-					actionDef.apply(ctx);
-				}
-
-				++m_idx;
-			}
-
-			void operator()(ActionDefId actionId, const TargetPerson& target) {
-				if (m_idx == m_executeIdx) {
-					auto& actionDef = m_g.GetActionDef(actionId);
-					auto ctx = ActionContext{ m_g, m_actor };
-					ctx.targetEntity = target.person;
-					actionDef.apply(ctx);
-				}
-
-				++m_idx;
-			}
-
-			void operator()(ActionDefId actionId, const TargetPersonWithItem& target) {
-				if (m_idx == m_executeIdx) {
-					auto& actionDef = m_g.GetActionDef(actionId);
-					auto ctx = ActionContext{ m_g, m_actor };
-					ctx.targetEntity = target.person;
-					ctx.targetEntity2 = target.item;
-					actionDef.apply(ctx);
-				}
-
-				++m_idx;
-			}
-
-			void operator()(ActionDefId actionId, const TargetItemOnPerson& target) {
-				if (m_idx == m_executeIdx) {
-					auto& actionDef = m_g.GetActionDef(actionId);
-					auto ctx = ActionContext{ m_g, m_actor };
-					ctx.targetEntity = target.item;
-					ctx.targetEntity2 = target.person;
-					actionDef.apply(ctx);
-				}
-
-				++m_idx;
-			}
-		} visitor(*this, actor, actionIdx);
-
-		VisitPossibleActionsForPerson(actor, visitor);
 	}
 
 protected:

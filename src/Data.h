@@ -17,17 +17,18 @@ enum class ActionTargetType {
     ItemOnPerson
 };
 
-struct ActionContext {
-    Game& g;
+struct ActionRef {
+    ActionDefId actionId;
     entt::entity actor;
-    entt::entity targetEntity = entt::null;
-    entt::entity targetEntity2 = entt::null;
+    entt::entity item = entt::null;
+    entt::entity target = entt::null;
+    entt::entity targetItem = entt::null;
 };
 
 struct ActionDef {
     std::string name;
     ActionTargetType targetType;
-    std::function<void(const ActionContext&)> apply;
+    std::function<void(Game&, const ActionRef&)> apply;
 };
 
 struct TargetPerson {
